@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log"
 
 	"github.com/istae/b2b"
 )
@@ -14,19 +15,43 @@ func main() {
 
 	flag.Parse()
 
-	b2b := b2b.New("localhost", *port)
-
 	if *isServer {
+
+		b := b2b.New("localhost", *port)
+		b.AddProcol("test-protocol", func(s *b2b.Stream) {
+			defer s.Close()
+			b, _ := s.Read()
+			fmt.Println("handle: test-protocol", string(b))
+			s.Write([]byte("what up what up"))
+		})
+
 		fmt.Println("startig server")
-		err := b2b.Listen()
+		err := b.Listen()
 		if err != nil {
-			fmt.Println(err)
+			log.Fatal(err)
 		}
 	} else {
-		fmt.Println("connecting")
-		_, err := b2b.Connect("localhost", *port)
+		b := b2b.New("", "")
+		peerID, err := b.Connect("localhost:" + *port)
 		if err != nil {
-			fmt.Println(err)
+			log.Fatal(err)
 		}
+		s, err := b.NewStream("test-protocol", peerID)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		err = s.Write([]byte("yo yo yo yo"))
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		m, err := s.Read()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(string(m))
+
+		// s.Close()
 	}
 }
