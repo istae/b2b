@@ -51,7 +51,8 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Println(string(m))
+		s.Close()
 
-		// s.Close()
+		b.Disconnect(peerID)
 	}
 }
