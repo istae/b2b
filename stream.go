@@ -9,8 +9,9 @@ type Stream struct {
 	w chan []byte
 	r chan []byte
 	c chan struct{}
+	q chan struct{}
 
-	closeFunc func()
+	cleanUp func()
 
 	streamID string
 	protocol string
@@ -19,29 +20,30 @@ type Stream struct {
 
 var errStreamClosed = errors.New("stream closed")
 
-func (b *b2b) stream(protocol, peerID, streamID string) (chan []byte, chan []byte, chan struct{}, *Stream, bool) {
+func (b *b2b) stream(protocol, peerID, streamID string) (chan []byte, chan []byte, chan struct{}, chan struct{}, *Stream, bool) {
 
 	id := peerID + streamID
 
 	if s, ok := b.streams[id]; ok {
-		return s.w, s.r, s.c, s, false
+		return s.w, s.r, s.c, s.q, s, false
 	}
 
 	s := &Stream{
 		w: make(chan []byte),
-		r: make(chan []byte),
+		r: make(chan []byte, 1024),
+		q: make(chan struct{}),
 		c: make(chan struct{}),
-		closeFunc: func() {
+		cleanUp: func() {
 			delete(b.streams, id)
 		},
-		protocol: "",
+		protocol: protocol,
 		peerID:   peerID,
 		streamID: streamID,
 	}
 
 	b.streams[id] = s
 
-	return s.w, s.r, s.c, s, true
+	return s.w, s.r, s.c, s.q, s, true
 }
 
 func (s *Stream) Write(b []byte) error {
@@ -69,23 +71,16 @@ func (s *Stream) Read() ([]byte, error) {
 }
 
 func (s *Stream) close() {
-	s.closeFunc()
 	close(s.c)
+	s.cleanUp()
 }
 
 func (s *Stream) Close() error {
 
-	msg := Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.peerID, Status: StatusClose}
-	b, err := msg.Marshall()
-	if err != nil {
-		return err
-	}
-
 	select {
 	case <-s.c:
-		return nil
-	case s.w <- b:
-		s.close()
+		return errStreamClosed
+	case s.q <- struct{}{}:
 		return nil
 	}
 }

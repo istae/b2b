@@ -96,16 +96,47 @@ func (b *b2b) handle(conn net.Conn) error {
 			continue
 		}
 
-		w, r, c, s, new := b.stream(msg.Protocol, msg.PeerID, msg.StreamID)
+		w, r, c, q, s, new := b.stream(msg.Protocol, msg.PeerID, msg.StreamID)
+
+		if msg.Status == StatusClose {
+			s.close()
+			continue
+		}
+
+		select {
+		case r <- msg.Data:
+		case <-c:
+			// default:
+			// 	// in the case that the queue is full, wait for a write
+			// 	go func(msg Msg, r chan []byte, c chan struct{}) {
+			// 		for {
+			// 			select {
+			// 			case <-c:
+			// 				fmt.Println("closed")
+			// 				return
+			// 			case r <- msg.Data:
+			// 			}
+			// 		}
+			// 	}(msg, r, c)
+		}
 
 		if new {
 			if protocolHandle, ok := b.protocols[msg.Protocol]; ok {
 				go protocolHandle(s)
-				go func(msg Msg, w chan []byte, c chan struct{}, s *Stream) {
+				go func(msg Msg, w chan []byte, c chan struct{}, q chan struct{}, s *Stream) {
 					for {
 						select {
 						case <-c:
 							fmt.Println("closed")
+							return
+						case <-q:
+							s.close()
+							msg := Msg{Protocol: msg.Protocol, StreamID: msg.StreamID, PeerID: b.peerID, Status: StatusClose}
+							b, _ := msg.Marshall()
+							_, err := conn.Write(b)
+							if err != nil {
+								fmt.Println("err on conn.Write")
+							}
 							return
 						case data := <-w:
 							msg := Msg{Protocol: msg.Protocol, StreamID: msg.StreamID, PeerID: b.peerID, Data: data}
@@ -118,20 +149,9 @@ func (b *b2b) handle(conn net.Conn) error {
 							}
 						}
 					}
-				}(msg, w, c, s)
+				}(msg, w, c, q, s)
 			}
 		}
-
-		go func(msg Msg, r chan []byte, c chan struct{}) {
-			for {
-				select {
-				case <-c:
-					fmt.Println("closed")
-					return
-				case r <- msg.Data:
-				}
-			}
-		}(msg, r, c)
 	}
 }
 
@@ -159,6 +179,15 @@ func (s *b2b) Connect(addr string) (peerID string, err error) {
 	return
 }
 
+func (s *b2b) Disconnect(peerID string) error {
+
+	if conn, ok := s.conns[peerID]; ok {
+		return conn.Close()
+	}
+
+	return nil
+}
+
 func (b *b2b) NewStream(protocol, peerID string) (*Stream, error) {
 
 	conn, ok := b.conns[peerID]
@@ -168,12 +197,21 @@ func (b *b2b) NewStream(protocol, peerID string) (*Stream, error) {
 
 	streamID := randomID()
 
-	w, _, c, s, _ := b.stream(protocol, peerID, streamID)
+	w, _, c, q, s, _ := b.stream(protocol, peerID, streamID)
 
 	go func() {
 		for {
 			select {
 			case <-c:
+				return
+			case <-q:
+				s.close()
+				msg := Msg{Protocol: protocol, StreamID: streamID, PeerID: b.peerID, Status: StatusClose}
+				b, _ := msg.Marshall()
+				_, err := conn.Write(b)
+				if err != nil {
+					fmt.Println("err on conn.Write")
+				}
 				return
 			case data := <-w:
 				msg := Msg{Protocol: protocol, StreamID: streamID, PeerID: b.peerID, Data: data}
