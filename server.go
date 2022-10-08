@@ -29,11 +29,10 @@ type HandleFunc func(*Stream)
 type b2b struct {
 	host      string
 	port      string
+	peerID    string
 	protocols map[string]HandleFunc // protocol name to protocol
 	conns     map[string]net.Conn   // peerID to conn
 	streams   map[string]*Stream
-
-	peerID string
 }
 
 func New(host, port string) *b2b {
@@ -88,7 +87,16 @@ func (s *b2b) Listen() error {
 
 func (b *b2b) handle(conn net.Conn) error {
 
+	quitErr := make(chan struct{})
+
 	for {
+
+		select {
+		case <-quitErr:
+			return errors.New("write error")
+		default:
+		}
+
 		var msg Msg
 
 		err := msg.Unmarshall(conn)
@@ -96,61 +104,23 @@ func (b *b2b) handle(conn net.Conn) error {
 			continue
 		}
 
-		w, r, c, q, s, new := b.stream(msg.Protocol, msg.PeerID, msg.StreamID)
+		r, s, new := b.stream(conn, quitErr, msg.Protocol, msg.PeerID, msg.StreamID)
 
 		if msg.Status == StatusClose {
-			s.close()
+			s.closedByPeer()
 			continue
-		}
-
-		select {
-		case r <- msg.Data:
-		case <-c:
-			// default:
-			// 	// in the case that the queue is full, wait for a write
-			// 	go func(msg Msg, r chan []byte, c chan struct{}) {
-			// 		for {
-			// 			select {
-			// 			case <-c:
-			// 				fmt.Println("closed")
-			// 				return
-			// 			case r <- msg.Data:
-			// 			}
-			// 		}
-			// 	}(msg, r, c)
 		}
 
 		if new {
 			if protocolHandle, ok := b.protocols[msg.Protocol]; ok {
 				go protocolHandle(s)
-				go func(msg Msg, w chan []byte, c chan struct{}, q chan struct{}, s *Stream) {
-					for {
-						select {
-						case <-c:
-							fmt.Println("closed")
-							return
-						case <-q:
-							s.close()
-							msg := Msg{Protocol: msg.Protocol, StreamID: msg.StreamID, PeerID: b.peerID, Status: StatusClose}
-							b, _ := msg.Marshall()
-							_, err := conn.Write(b)
-							if err != nil {
-								fmt.Println("err on conn.Write")
-							}
-							return
-						case data := <-w:
-							msg := Msg{Protocol: msg.Protocol, StreamID: msg.StreamID, PeerID: b.peerID, Data: data}
-							b, _ := msg.Marshall()
-							_, err := conn.Write(b)
-							if err != nil {
-								fmt.Println("err on conn.Write")
-								s.close()
-								return
-							}
-						}
-					}
-				}(msg, w, c, q, s)
 			}
+		}
+
+		select {
+		case r <- msg.Data:
+		default:
+			return errors.New("reached max read buffer")
 		}
 	}
 }
@@ -197,34 +167,7 @@ func (b *b2b) NewStream(protocol, peerID string) (*Stream, error) {
 
 	streamID := randomID()
 
-	w, _, c, q, s, _ := b.stream(protocol, peerID, streamID)
-
-	go func() {
-		for {
-			select {
-			case <-c:
-				return
-			case <-q:
-				s.close()
-				msg := Msg{Protocol: protocol, StreamID: streamID, PeerID: b.peerID, Status: StatusClose}
-				b, _ := msg.Marshall()
-				_, err := conn.Write(b)
-				if err != nil {
-					fmt.Println("err on conn.Write")
-				}
-				return
-			case data := <-w:
-				msg := Msg{Protocol: protocol, StreamID: streamID, PeerID: b.peerID, Data: data}
-				b, _ := msg.Marshall()
-				_, err := conn.Write(b)
-				if err != nil {
-					fmt.Println("err on conn.Write")
-					s.close()
-					return
-				}
-			}
-		}
-	}()
+	_, s, _ := b.stream(conn, nil, protocol, peerID, streamID)
 
 	return s, nil
 }
@@ -297,87 +240,3 @@ func (s *b2b) sayHelloBack(conn net.Conn) (peerID string, err error) {
 
 	return
 }
-
-// func readProtocol(buf *buffer) (string, error) {
-
-// 	b, err := buf.Read(maxProcotolLength)
-// 	if err != nil {
-// 		return "", err
-// 	}
-
-// 	indx := strings.Index(string(b), "\n")
-
-// 	return string(b[:indx]), nil
-// }
-
-// func (s *b2b) addConn(conn net.Conn) {
-
-// 	r := make([]byte, 1024)
-
-// 	go func() {
-// 		for {
-// 			_, err := conn.Read(r)
-// 			if err != nil {
-// 				log.Fatal(err)
-// 			}
-// 		}
-// 	}()
-
-// 	go func() {
-// 		for {
-// 			conn.Read(r)
-// 		}
-// 	}()
-// }
-
-// a stream is a protol specific read and write
-
-/*
-
-type stream struct {
-
-	w io.Writer
-	r io.Reader
-
-}
-
-
-func NewStream() *stream {
-
-}
-
-func (s *b2b) handle(conn net.Conn) error {
-
-	var (
-		buffer = NewBuffer(conn)
-		err    error
-	)
-
-	protocol, err := readProtocol(buffer)
-	if err != nil {
-		return err
-	}
-
-	buffer.Rewind(maxProcotolLength - len(protocol))
-
-	if protocol != helloProcol {
-		return errors.New("not hello protocol")
-	}
-
-	_, err = conn.Write([]byte("/b2b/hello/1.0.0\n"))
-	if err != nil {
-		return err
-	}
-
-	s.conns[testPeerID] = conn
-
-	for {
-
-	}
-
-	return err
-}
-
-
-
-*/
