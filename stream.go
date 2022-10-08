@@ -2,27 +2,29 @@ package b2b
 
 import (
 	"errors"
+	"fmt"
 )
 
 type Stream struct {
 	w *secureReadWriter
 	r chan []byte
-	c chan struct{}
-	p chan struct{}
 
-	cleanUp func()
-
+	cleanUp  func()
+	c        *Once
+	p        *Once
 	streamID string
 	protocol string
 	peerID   string
-
-	baseID string
+	baseID   string
 }
 
-var errStreamClosed = errors.New("stream closed by peer")
-var errClosedStream = errors.New("closed stream")
+var errPeerClosed = errors.New("stream closed by peer")
+var errStreamClosed = errors.New("stream closed")
 
 func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (chan []byte, *Stream, bool) {
+
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
 
 	id := peerID + streamID
 
@@ -33,8 +35,8 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 	s := &Stream{
 		w:        w,
 		r:        make(chan []byte, 1024),
-		c:        make(chan struct{}),
-		p:        make(chan struct{}),
+		c:        NewOnce(),
+		p:        NewOnce(),
 		protocol: protocol,
 		peerID:   peerID,
 		streamID: streamID,
@@ -50,50 +52,41 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 }
 
 func (s *Stream) Write(b []byte) error {
+
+	fmt.Println("write start")
+	defer fmt.Println("write end")
+
 	select {
-	case <-s.p:
+	case <-s.p.C:
+		return errPeerClosed
+	case <-s.c.C:
 		return errStreamClosed
-	case <-s.c:
-		return errClosedStream
 	default:
 	}
 
-	msg := &Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Data: b}
-	return s.write(msg)
+	return s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Data: b})
 }
 
 func (s *Stream) Read() ([]byte, error) {
+	fmt.Println("read start")
+	defer fmt.Println("read end")
 	select {
 	case b := <-s.r:
 		return b, nil
-	case <-s.p:
+	case <-s.p.C:
+		return nil, errPeerClosed
+	case <-s.c.C:
 		return nil, errStreamClosed
-	case <-s.c:
-		return nil, errClosedStream
 	}
-}
-
-func (s *Stream) closedByPeer() {
-	close(s.p)
-	s.cleanUp()
-}
-
-func (s *Stream) write(msg *Msg) error {
-
-	err := s.w.Write(msg)
-	if err != nil {
-		s.w.Close()
-		return err
-	}
-
-	return nil
 }
 
 func (s *Stream) Close() error {
+	s.cleanUp()
+	s.c.Done()
+	return s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Status: StatusClose})
+}
 
-	defer s.cleanUp()
-	defer close(s.c)
-
-	msg := &Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Status: StatusClose}
-	return s.w.Write(msg)
+func (s *Stream) closedByPeer() {
+	s.cleanUp()
+	s.p.Done()
 }

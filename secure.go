@@ -3,20 +3,17 @@ package b2b
 import (
 	"encoding"
 	"encoding/binary"
+	"fmt"
 	"net"
-	"sync"
 )
 
 type secureReadWriter struct {
 	conn net.Conn
 	enc  *symmetric
-	once sync.Once
-	C    chan struct{}
 }
 
 func NewSecureReadWriter(conn net.Conn, enc *symmetric) *secureReadWriter {
 	return &secureReadWriter{
-		C:    make(chan struct{}),
 		conn: conn,
 		enc:  enc,
 	}
@@ -28,6 +25,8 @@ func (s *secureReadWriter) Write(m encoding.BinaryMarshaler) error {
 	if err != nil {
 		return err
 	}
+
+	fmt.Println("Marshall", string(b))
 
 	data, err := s.enc.Encrypt(b)
 	if err != nil {
@@ -61,10 +60,11 @@ func (s *secureReadWriter) Read(m encoding.BinaryUnmarshaler) (err error) {
 		return
 	}
 
+	fmt.Println("Unmarshall", string(data))
+
 	return m.UnmarshalBinary(data)
 }
 
 func (s *secureReadWriter) Close() error {
-	s.once.Do(func() { close(s.C) })
 	return s.conn.Close()
 }

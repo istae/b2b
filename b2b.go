@@ -5,13 +5,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	mathRand "math/rand"
 	"net"
+	"sync"
 )
-
-/*
-/b2b/[protocol]/[version]
-[streamID][length][payload]
-*/
 
 const (
 	maxProcotolLength = 1024
@@ -32,19 +29,20 @@ type b2b struct {
 	host      string
 	port      string
 	peerID    string
-	protocols map[string]HandleFunc        // protocol name to handleFunc
-	conns     map[string]*secureReadWriter // peerID to Conn
-	streams   map[string]*Stream           // peerID + steamID to Stream
+	protocols map[string]HandleFunc          // protocol name to handleFunc
+	conns     map[string][]*secureReadWriter // peerID to Conn
+	streams   map[string]*Stream             // peerID + steamID to Stream
 
+	mtx sync.Mutex
 	key *asymmetric
 }
 
 func New(host, port string) (*b2b, error) {
-	s := &b2b{
+	b := &b2b{
 		host:      host,
 		port:      port,
 		protocols: make(map[string]HandleFunc),
-		conns:     make(map[string]*secureReadWriter),
+		conns:     make(map[string][]*secureReadWriter),
 		streams:   make(map[string]*Stream),
 		peerID:    RandomID(),
 	}
@@ -54,18 +52,18 @@ func New(host, port string) (*b2b, error) {
 		return nil, err
 	}
 
-	s.key = key
+	b.key = key
 
-	return s, nil
+	return b, nil
 }
 
 func (b *b2b) AddProcol(name string, h HandleFunc) {
 	b.protocols[name] = h
 }
 
-func (s *b2b) Listen() error {
+func (b *b2b) Listen() error {
 
-	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%s", s.host, s.port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("%s:%s", b.host, b.port))
 	if err != nil {
 		return err
 	}
@@ -80,15 +78,17 @@ func (s *b2b) Listen() error {
 
 		go func(conn net.Conn) {
 
-			peerID, enc, err := s.sayHelloBack(conn)
+			defer conn.Close()
+
+			peerID, enc, err := b.sayHelloBack(conn)
 			if err != nil {
 				return
 			}
 
-			sc := NewSecureReadWriter(conn, enc)
-			s.conns[peerID] = sc
+			srw := NewSecureReadWriter(conn, enc)
+			b.addConn(peerID, srw)
 
-			err = s.handle(sc)
+			err = b.handle(srw)
 			if err != nil {
 				fmt.Println(err)
 			}
@@ -98,22 +98,23 @@ func (s *b2b) Listen() error {
 
 func (b *b2b) handle(conn *secureReadWriter) error {
 
+	var streams []*Stream
+	defer func() {
+		for _, s := range streams {
+			s.Close()
+		}
+	}()
+
 	for {
 
-		select {
-		case <-conn.C:
-			return errors.New("write error")
-		default:
-		}
-
 		var msg Msg
-
 		err := conn.Read(&msg)
 		if err != nil {
 			return err
 		}
 
 		r, s, new := b.stream(conn, msg.Protocol, msg.PeerID, msg.StreamID)
+		streams = append(streams, s)
 
 		if msg.Status == StatusClose {
 			s.closedByPeer()
@@ -126,6 +127,7 @@ func (b *b2b) handle(conn *secureReadWriter) error {
 			}
 		}
 
+		// write to a buffered channel to preserve read order
 		select {
 		case r <- msg.Data:
 		default:
@@ -134,7 +136,7 @@ func (b *b2b) handle(conn *secureReadWriter) error {
 	}
 }
 
-func (s *b2b) Connect(addr string) (peerID string, err error) {
+func (b *b2b) Connect(addr string) (peerID string, err error) {
 
 	var conn net.Conn
 
@@ -143,26 +145,32 @@ func (s *b2b) Connect(addr string) (peerID string, err error) {
 		return
 	}
 
-	peerID, enc, err := s.sayHello(conn)
+	peerID, enc, err := b.sayHello(conn)
 	if err != nil {
 		conn.Close()
 		return
 	}
 
-	sc := NewSecureReadWriter(conn, enc)
-	s.conns[peerID] = sc
+	srw := NewSecureReadWriter(conn, enc)
+	b.addConn(peerID, srw)
 
 	go func() {
-		s.handle(sc)
+		b.handle(srw)
+		conn.Close()
 	}()
 
 	return
 }
 
-func (s *b2b) Disconnect(peerID string) error {
+func (b *b2b) Disconnect(peerID string) error {
 
-	if c, ok := s.conns[peerID]; ok {
-		return c.conn.Close()
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+
+	conns := b.conns[peerID]
+
+	for _, s := range conns {
+		s.Close()
 	}
 
 	return nil
@@ -170,7 +178,7 @@ func (s *b2b) Disconnect(peerID string) error {
 
 func (b *b2b) NewStream(protocol, peerID string) (*Stream, error) {
 
-	conn, ok := b.conns[peerID]
+	conn, ok := b.getConn(peerID)
 	if !ok {
 		return nil, errors.New("connection does not exist")
 	}
@@ -259,4 +267,23 @@ func (s *b2b) sayHelloBack(c net.Conn) (peerID string, symmetricKey *symmetric, 
 	symmetricKey, err = NewSymmetricKey(key)
 
 	return
+}
+
+func (b *b2b) addConn(peerID string, srw *secureReadWriter) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+	b.conns[peerID] = append(b.conns[peerID], srw)
+}
+
+func (b *b2b) getConn(peerID string) (*secureReadWriter, bool) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+
+	srw := b.conns[peerID]
+
+	if len(srw) > 0 {
+		return srw[mathRand.Intn(len(srw))], true
+	}
+
+	return nil, false
 }
