@@ -27,7 +27,6 @@ func (s *secureReadWriter) Write(m encoding.BinaryMarshaler) error {
 	}
 
 	fmt.Println("Marshall", string(b))
-
 	data, err := s.enc.Encrypt(b)
 	if err != nil {
 		return err

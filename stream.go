@@ -2,7 +2,6 @@ package b2b
 
 import (
 	"errors"
-	"fmt"
 )
 
 type Stream struct {
@@ -42,7 +41,9 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 		streamID: streamID,
 		baseID:   b.peerID,
 		cleanUp: func() {
+			b.mtx.Lock()
 			delete(b.streams, id)
+			b.mtx.Unlock()
 		},
 	}
 
@@ -52,10 +53,6 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 }
 
 func (s *Stream) Write(b []byte) error {
-
-	fmt.Println("write start")
-	defer fmt.Println("write end")
-
 	select {
 	case <-s.p.C:
 		return errPeerClosed
@@ -68,8 +65,6 @@ func (s *Stream) Write(b []byte) error {
 }
 
 func (s *Stream) Read() ([]byte, error) {
-	fmt.Println("read start")
-	defer fmt.Println("read end")
 	select {
 	case b := <-s.r:
 		return b, nil
