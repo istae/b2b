@@ -17,7 +17,7 @@ func main() {
 
 	if *isServer {
 
-		b := b2b.New("localhost", *port)
+		b, _ := b2b.New("localhost", *port)
 		b.AddProcol("test-protocol", func(s *b2b.Stream) {
 			defer s.Close()
 			b, _ := s.Read()
@@ -31,7 +31,7 @@ func main() {
 			log.Fatal(err)
 		}
 	} else {
-		b := b2b.New("", "")
+		b, _ := b2b.New("", "")
 		peerID, err := b.Connect("localhost:" + *port)
 		if err != nil {
 			log.Fatal(err)

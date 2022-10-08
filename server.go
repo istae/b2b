@@ -20,6 +20,8 @@ const (
 
 const (
 	testProcol = "test-protocol"
+	LengthID   = 16
+	LengthKey  = 32
 )
 
 var errBadHandShake = errors.New("bad handshake")
@@ -30,21 +32,31 @@ type b2b struct {
 	host      string
 	port      string
 	peerID    string
-	protocols map[string]HandleFunc // protocol name to protocol
-	conns     map[string]net.Conn   // peerID to conn
-	streams   map[string]*Stream
+	protocols map[string]HandleFunc        // protocol name to handleFunc
+	conns     map[string]*secureReadWriter // peerID to Conn
+	streams   map[string]*Stream           // peerID + steamID to Stream
+
+	key *asymmetric
 }
 
-func New(host, port string) *b2b {
+func New(host, port string) (*b2b, error) {
 	s := &b2b{
 		host:      host,
 		port:      port,
 		protocols: make(map[string]HandleFunc),
-		conns:     make(map[string]net.Conn),
+		conns:     make(map[string]*secureReadWriter),
 		streams:   make(map[string]*Stream),
-		peerID:    randomID(),
+		peerID:    RandomID(),
 	}
-	return s
+
+	key, err := GenerateAsymmetric()
+	if err != nil {
+		return nil, err
+	}
+
+	s.key = key
+
+	return s, nil
 }
 
 func (b *b2b) AddProcol(name string, h HandleFunc) {
@@ -68,16 +80,15 @@ func (s *b2b) Listen() error {
 
 		go func(conn net.Conn) {
 
-			defer conn.Close()
-
-			peerID, err := s.sayHelloBack(conn)
+			peerID, enc, err := s.sayHelloBack(conn)
 			if err != nil {
 				return
 			}
 
-			s.conns[peerID] = conn
+			sc := NewSecureReadWriter(conn, enc)
+			s.conns[peerID] = sc
 
-			err = s.handle(conn)
+			err = s.handle(sc)
 			if err != nil {
 				fmt.Println(err)
 			}
@@ -85,26 +96,24 @@ func (s *b2b) Listen() error {
 	}
 }
 
-func (b *b2b) handle(conn net.Conn) error {
-
-	quitErr := make(chan struct{})
+func (b *b2b) handle(conn *secureReadWriter) error {
 
 	for {
 
 		select {
-		case <-quitErr:
+		case <-conn.C:
 			return errors.New("write error")
 		default:
 		}
 
 		var msg Msg
 
-		err := msg.Unmarshall(conn)
+		err := conn.Read(&msg)
 		if err != nil {
-			continue
+			return err
 		}
 
-		r, s, new := b.stream(conn, quitErr, msg.Protocol, msg.PeerID, msg.StreamID)
+		r, s, new := b.stream(conn, msg.Protocol, msg.PeerID, msg.StreamID)
 
 		if msg.Status == StatusClose {
 			s.closedByPeer()
@@ -134,25 +143,26 @@ func (s *b2b) Connect(addr string) (peerID string, err error) {
 		return
 	}
 
-	peerID, err = s.sayHello(conn)
+	peerID, enc, err := s.sayHello(conn)
 	if err != nil {
 		conn.Close()
 		return
 	}
 
+	sc := NewSecureReadWriter(conn, enc)
+	s.conns[peerID] = sc
+
 	go func() {
-		s.handle(conn)
-		conn.Close()
+		s.handle(sc)
 	}()
 
-	s.conns[peerID] = conn
 	return
 }
 
 func (s *b2b) Disconnect(peerID string) error {
 
-	if conn, ok := s.conns[peerID]; ok {
-		return conn.Close()
+	if c, ok := s.conns[peerID]; ok {
+		return c.conn.Close()
 	}
 
 	return nil
@@ -165,78 +175,88 @@ func (b *b2b) NewStream(protocol, peerID string) (*Stream, error) {
 		return nil, errors.New("connection does not exist")
 	}
 
-	streamID := randomID()
+	streamID := RandomID()
 
-	_, s, _ := b.stream(conn, nil, protocol, peerID, streamID)
+	_, s, _ := b.stream(conn, protocol, peerID, streamID)
 
 	return s, nil
 }
 
-func randomID() string {
-	id := make([]byte, 4)
+func RandomID() string {
+	id := make([]byte, LengthID)
 	_, _ = rand.Read(id)
 	return hex.EncodeToString(id)
 }
 
-func (s *b2b) sayHello(conn net.Conn) (peerID string, err error) {
+func RandomKey() []byte {
+	id := make([]byte, LengthKey)
+	_, _ = rand.Read(id)
+	return id
+}
+
+func (s *b2b) sayHello(c net.Conn) (peerID string, symmetricKey *symmetric, err error) {
+
+	conn := insecureReadWriter{conn: c}
 
 	var (
-		msg = Msg{
+		msg = &Msg{
 			Protocol: helloProcol,
-			StreamID: randomID(),
+			StreamID: RandomID(),
 			PeerID:   s.peerID,
+			Data:     s.key.pub,
 		}
-		b []byte
 	)
 
-	b, err = msg.Marshall()
+	// send public key
+	err = conn.Write(msg)
 	if err != nil {
 		return
 	}
 
-	_, err = conn.Write(b)
+	// receive symmetric key
+	err = conn.Read(msg)
+	if err != nil {
+		return
+	}
+	key, err := s.key.Decrypt(msg.Data)
 	if err != nil {
 		return
 	}
 
-	err = msg.Unmarshall(conn)
-	if err != nil {
-		return
-	}
-
-	if msg.Protocol != helloProcol {
-		return
-	}
-
+	symmetricKey, err = NewSymmetricKey(key)
 	peerID = msg.PeerID
 
 	return
 }
 
-func (s *b2b) sayHelloBack(conn net.Conn) (peerID string, err error) {
+func (s *b2b) sayHelloBack(c net.Conn) (peerID string, symmetricKey *symmetric, err error) {
 
-	var msg Msg
-	var b []byte
+	conn := insecureReadWriter{conn: c}
 
-	err = msg.Unmarshall(conn)
+	msg := &Msg{}
+
+	// get public key
+	err = conn.Read(msg)
 	if err != nil {
 		return
 	}
-
-	if msg.Protocol != helloProcol {
-		err = errBadHandShake
-		return
-	}
-
 	peerID = msg.PeerID
-	msg.PeerID = s.peerID
+	pubKey := msg.Data
 
-	b, err = msg.Marshall()
+	// send symmetric key
+	key := RandomKey()
+	msg.Data, err = Encrypt(pubKey, key)
 	if err != nil {
 		return
 	}
 
-	_, err = conn.Write(b)
+	msg.PeerID = s.peerID
+	err = conn.Write(msg)
+	if err != nil {
+		return
+	}
+
+	symmetricKey, err = NewSymmetricKey(key)
 
 	return
 }

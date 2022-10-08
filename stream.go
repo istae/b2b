@@ -2,16 +2,13 @@ package b2b
 
 import (
 	"errors"
-	"io"
 )
 
 type Stream struct {
-	w io.Writer
+	w *secureReadWriter
 	r chan []byte
 	c chan struct{}
 	p chan struct{}
-
-	writeErr chan struct{}
 
 	cleanUp func()
 
@@ -25,7 +22,7 @@ type Stream struct {
 var errStreamClosed = errors.New("stream closed by peer")
 var errClosedStream = errors.New("closed stream")
 
-func (b *b2b) stream(w io.Writer, writeErr chan struct{}, protocol, peerID, streamID string) (chan []byte, *Stream, bool) {
+func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (chan []byte, *Stream, bool) {
 
 	id := peerID + streamID
 
@@ -38,14 +35,13 @@ func (b *b2b) stream(w io.Writer, writeErr chan struct{}, protocol, peerID, stre
 		r:        make(chan []byte, 1024),
 		c:        make(chan struct{}),
 		p:        make(chan struct{}),
-		writeErr: writeErr,
-		cleanUp: func() {
-			delete(b.streams, id)
-		},
 		protocol: protocol,
 		peerID:   peerID,
 		streamID: streamID,
 		baseID:   b.peerID,
+		cleanUp: func() {
+			delete(b.streams, id)
+		},
 	}
 
 	b.streams[id] = s
@@ -62,14 +58,8 @@ func (s *Stream) Write(b []byte) error {
 	default:
 	}
 
-	msg := Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Data: b}
-	b, err := msg.Marshall()
-	if err != nil {
-		return err
-	}
-
-	err = s.write(b)
-	return err
+	msg := &Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Data: b}
+	return s.write(msg)
 }
 
 func (s *Stream) Read() ([]byte, error) {
@@ -88,14 +78,15 @@ func (s *Stream) closedByPeer() {
 	s.cleanUp()
 }
 
-func (s *Stream) write(b []byte) error {
+func (s *Stream) write(msg *Msg) error {
 
-	_, err := s.w.Write(b)
+	err := s.w.Write(msg)
 	if err != nil {
-		close(s.writeErr)
+		s.w.Close()
+		return err
 	}
 
-	return err
+	return nil
 }
 
 func (s *Stream) Close() error {
@@ -103,7 +94,6 @@ func (s *Stream) Close() error {
 	defer s.cleanUp()
 	defer close(s.c)
 
-	msg := Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Status: StatusClose}
-	b, _ := msg.Marshall()
-	return s.write(b)
+	msg := &Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Status: StatusClose}
+	return s.w.Write(msg)
 }
