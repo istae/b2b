@@ -7,15 +7,25 @@ import (
 	"net"
 )
 
-type secureReadWriter struct {
-	conn net.Conn
-	enc  *symmetric
+type Encrypter interface {
+	Encrypt([]byte) ([]byte, error)
 }
 
-func NewSecureReadWriter(conn net.Conn, enc *symmetric) *secureReadWriter {
+type Decrypter interface {
+	Decrypt([]byte) ([]byte, error)
+}
+
+type secureReadWriter struct {
+	conn net.Conn
+	enc  Encrypter
+	dec  Decrypter
+}
+
+func NewSecureReadWriter(conn net.Conn, enc Encrypter, dec Decrypter) *secureReadWriter {
 	return &secureReadWriter{
 		conn: conn,
 		enc:  enc,
+		dec:  dec,
 	}
 }
 
@@ -27,6 +37,7 @@ func (s *secureReadWriter) Write(m encoding.BinaryMarshaler) error {
 	}
 
 	fmt.Println("Marshall", string(b))
+
 	data, err := s.enc.Encrypt(b)
 	if err != nil {
 		return err
@@ -54,7 +65,7 @@ func (s *secureReadWriter) Read(m encoding.BinaryUnmarshaler) (err error) {
 		return
 	}
 
-	data, err := s.enc.Decrypt(b)
+	data, err := s.dec.Decrypt(b)
 	if err != nil {
 		return
 	}

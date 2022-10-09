@@ -17,7 +17,12 @@ func main() {
 
 	if *isServer {
 
-		b, _ := b2b.New("localhost", *port)
+		a, err := b2b.NewAsymmetric()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		b, _ := b2b.New(a)
 		b.AddProcol("test-protocol", func(s *b2b.Stream) {
 			defer s.Close()
 			b, _ := s.Read()
@@ -26,12 +31,17 @@ func main() {
 		})
 
 		fmt.Println("startig server")
-		err := b.Listen()
+		err = b.Listen(fmt.Sprintf("localhost:%s", *port))
 		if err != nil {
 			log.Fatal(err)
 		}
 	} else {
-		b, _ := b2b.New("", "")
+		a, err := b2b.NewAsymmetric()
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		b, _ := b2b.New(a)
 		peerID, err := b.Connect("localhost:" + *port)
 		if err != nil {
 			log.Fatal(err)

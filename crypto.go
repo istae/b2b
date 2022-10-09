@@ -1,54 +1,93 @@
 package b2b
 
 import (
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"errors"
 )
 
 type asymmetric struct {
-	key *rsa.PrivateKey
-	pub []byte
+	priv     *rsa.PrivateKey
+	pub      *rsa.PublicKey
+	pubBytes []byte
 }
 
-func GenerateAsymmetric() (*asymmetric, error) {
-
-	a := &asymmetric{}
+func NewAsymmetric() (*asymmetric, error) {
 
 	k, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return nil, err
 	}
 
-	a.pub = x509.MarshalPKCS1PublicKey(&k.PublicKey)
-	a.key = k
-
-	return a, nil
+	return &asymmetric{
+		priv:     k,
+		pub:      &k.PublicKey,
+		pubBytes: x509.MarshalPKCS1PublicKey(&k.PublicKey),
+	}, nil
 }
 
 func (a *asymmetric) Encrypt(data []byte) ([]byte, error) {
-	return rsa.EncryptPKCS1v15(rand.Reader, &a.key.PublicKey, data)
+	return rsa.EncryptPKCS1v15(rand.Reader, a.pub, data)
 }
 
 func (a *asymmetric) Decrypt(data []byte) ([]byte, error) {
-	return a.key.Decrypt(nil, data, nil)
+	return a.priv.Decrypt(nil, data, nil)
 }
 
-func Encrypt(pub []byte, data []byte) ([]byte, error) {
+func (a *asymmetric) Sign(data []byte) ([]byte, error) {
+	h := sha256.Sum256(data)
+	return rsa.SignPKCS1v15(rand.Reader, a.priv, crypto.SHA256, h[:])
+}
 
-	key, err := x509.ParsePKCS1PublicKey(pub)
-	if err != nil {
-		return nil, err
+func (a *asymmetric) Verify(data, sig []byte) error {
+	h := sha256.Sum256(data)
+	return rsa.VerifyPKCS1v15(a.pub, crypto.SHA256, h[:], sig)
+}
+
+func (a *asymmetric) Unmarshal(pub, priv []byte) error {
+
+	if pub != nil {
+		key, err := x509.ParsePKCS1PublicKey(pub)
+		if err != nil {
+			return err
+		}
+		a.pub = key
+		a.pubBytes = pub
 	}
 
-	return rsa.EncryptPKCS1v15(rand.Reader, key, data)
+	if priv != nil {
+		key, err := x509.ParsePKCS1PrivateKey(priv)
+		if err != nil {
+			return err
+		}
+		a.priv = key
+	}
+
+	return nil
+}
+
+func (a *asymmetric) Marshal() ([]byte, []byte) {
+	return x509.MarshalPKCS1PublicKey(a.pub), x509.MarshalPKCS1PrivateKey(a.priv)
+}
+
+func Hash(b []byte) []byte {
+	a := sha256.Sum256(b)
+	return a[:]
 }
 
 type symmetric struct {
 	a cipher.AEAD
+}
+
+func RandomKey() []byte {
+	id := make([]byte, LengthKey)
+	_, _ = rand.Read(id)
+	return id
 }
 
 func NewSymmetricKey(key []byte) (*symmetric, error) {
