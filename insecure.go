@@ -19,7 +19,7 @@ func (s *insecureReadWriter) Write(msg encoding.BinaryMarshaler) error {
 	}
 
 	l := make([]byte, 8)
-	binary.BigEndian.PutUint32(l, uint32(len(b)))
+	binary.BigEndian.PutUint64(l, uint64(len(b)))
 
 	fmt.Println("Marshall", string(b))
 
@@ -35,7 +35,7 @@ func (s *insecureReadWriter) Read(msg encoding.BinaryUnmarshaler) (err error) {
 		return
 	}
 
-	l := binary.BigEndian.Uint32(buf)
+	l := binary.BigEndian.Uint64(buf)
 	buf = make([]byte, int(l))
 	_, err = s.conn.Read(buf)
 	if err != nil {

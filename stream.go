@@ -82,7 +82,7 @@ func (s *Stream) Write(b []byte) error {
 	return s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Data: b})
 }
 
-func (s *Stream) Read() ([]byte, error) {
+func (s *Stream) Read([]byte) (int, error) {
 
 	defer s.maxInactive.Reset(s.maxInactiveDur)
 
