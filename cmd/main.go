@@ -22,7 +22,10 @@ func main() {
 			log.Fatal(err)
 		}
 
-		b, _ := b2b.New(a)
+		opt := b2b.DefaultOptions()
+		// opt.MaxConnectionsPerPeer = 1
+
+		b, _ := b2b.New(a, &opt)
 		b.AddProcol("test-protocol", func(s *b2b.Stream) {
 			defer s.Close()
 			b, _ := s.Read()
@@ -41,7 +44,8 @@ func main() {
 			log.Fatal(err)
 		}
 
-		b, _ := b2b.New(a)
+		b, _ := b2b.New(a, nil)
+
 		peerID, err := b.Connect("localhost:" + *port)
 		if err != nil {
 			log.Fatal(err)

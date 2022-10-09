@@ -2,6 +2,7 @@ package b2b
 
 import (
 	"errors"
+	"time"
 )
 
 type Stream struct {
@@ -15,6 +16,9 @@ type Stream struct {
 	protocol string
 	peerID   string
 	baseID   string
+
+	maxInactive    *time.Timer
+	maxInactiveDur time.Duration
 }
 
 var errPeerClosed = errors.New("stream closed by peer")
@@ -31,21 +35,32 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 		return s.r, s, false
 	}
 
+	maxInactive := time.NewTimer(b.options.StreamMaxInactive)
+
 	s := &Stream{
-		w:        w,
-		r:        make(chan []byte, 1024),
-		c:        NewOnce(),
-		p:        NewOnce(),
-		protocol: protocol,
-		peerID:   peerID,
-		streamID: streamID,
-		baseID:   b.peerID,
-		cleanUp: func() {
-			b.mtx.Lock()
-			delete(b.streams, id)
-			b.mtx.Unlock()
-		},
+		w:              w,
+		r:              make(chan []byte, 1024),
+		c:              NewOnce(),
+		p:              NewOnce(),
+		protocol:       protocol,
+		peerID:         peerID,
+		streamID:       streamID,
+		baseID:         b.peerID,
+		maxInactive:    maxInactive,
+		maxInactiveDur: b.options.StreamMaxInactive,
 	}
+
+	s.cleanUp = func() {
+		b.mtx.Lock()
+		delete(b.streams, id)
+		b.mtx.Unlock()
+		maxInactive.Stop()
+	}
+
+	go func() {
+		<-s.maxInactive.C
+		_ = s.Close()
+	}()
 
 	b.streams[id] = s
 
@@ -53,6 +68,9 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 }
 
 func (s *Stream) Write(b []byte) error {
+
+	defer s.maxInactive.Reset(s.maxInactiveDur)
+
 	select {
 	case <-s.p.C:
 		return errPeerClosed
@@ -65,6 +83,9 @@ func (s *Stream) Write(b []byte) error {
 }
 
 func (s *Stream) Read() ([]byte, error) {
+
+	defer s.maxInactive.Reset(s.maxInactiveDur)
+
 	select {
 	case b := <-s.r:
 		return b, nil

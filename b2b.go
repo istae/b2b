@@ -8,6 +8,7 @@ import (
 	mathRand "math/rand"
 	"net"
 	"sync"
+	"time"
 )
 
 const (
@@ -21,9 +22,15 @@ const (
 	LengthKey  = 32
 )
 
-var errBadHandShake = errors.New("bad handshake")
+var errPeerIDVerification = errors.New("peerID verification")
 
 type HandleFunc func(*Stream)
+
+type B2BOptions struct {
+	StreamMaxInactive     time.Duration
+	ConnectionMaxInactive time.Duration
+	MaxConnectionsPerPeer int
+}
 
 type b2b struct {
 	peerID    string
@@ -33,9 +40,11 @@ type b2b struct {
 
 	mtx sync.Mutex
 	key *asymmetric
+
+	options B2BOptions
 }
 
-func New(key *asymmetric) (*b2b, error) {
+func New(key *asymmetric, o *B2BOptions) (*b2b, error) {
 	b := &b2b{
 		key:       key,
 		protocols: make(map[string]HandleFunc),
@@ -44,7 +53,21 @@ func New(key *asymmetric) (*b2b, error) {
 		peerID:    hex.EncodeToString(Hash(key.pubBytes)),
 	}
 
+	if o == nil {
+		b.options = DefaultOptions()
+	} else {
+		b.options = *o
+	}
+
 	return b, nil
+}
+
+func DefaultOptions() B2BOptions {
+	return B2BOptions{
+		StreamMaxInactive:     time.Hour,
+		ConnectionMaxInactive: time.Hour,
+		MaxConnectionsPerPeer: 3,
+	}
 }
 
 func (b *b2b) AddProcol(name string, h HandleFunc) {
@@ -69,15 +92,19 @@ func (b *b2b) Listen(addr string) error {
 		go func(conn net.Conn) {
 
 			defer conn.Close()
-			defer fmt.Println("conn closed")
 
 			peerID, s, err := b.sayHelloBack(conn)
 			if err != nil {
+				fmt.Println(err)
 				return
 			}
 
-			srw := NewSecureReadWriter(conn, s, s)
-			b.addConn(peerID, srw)
+			srw := NewSecureReadWriter(conn, s, s, b.options.ConnectionMaxInactive)
+			err = b.addConn(peerID, srw)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
 
 			err = b.handle(srw)
 			if err != nil {
@@ -105,7 +132,6 @@ func (b *b2b) handle(conn *secureReadWriter) error {
 		}
 
 		r, s, new := b.stream(conn, msg.Protocol, msg.PeerID, msg.StreamID)
-		streams = append(streams, s)
 
 		if msg.Status == StatusClose {
 			s.closedByPeer()
@@ -113,6 +139,7 @@ func (b *b2b) handle(conn *secureReadWriter) error {
 		}
 
 		if new {
+			streams = append(streams, s)
 			if protocolHandle, ok := b.protocols[msg.Protocol]; ok {
 				go protocolHandle(s)
 			}
@@ -142,8 +169,12 @@ func (b *b2b) Connect(addr string) (peerID string, err error) {
 		return
 	}
 
-	srw := NewSecureReadWriter(conn, s, s)
-	b.addConn(peerID, srw)
+	srw := NewSecureReadWriter(conn, s, s, b.options.ConnectionMaxInactive)
+	err = b.addConn(peerID, srw)
+	if err != nil {
+		srw.Close()
+		return
+	}
 
 	go func() {
 		b.handle(srw)
@@ -219,7 +250,7 @@ func (b *b2b) sayHello(c net.Conn) (peerID string, symmetricKey *symmetric, err 
 
 	// verify peerID
 	if peerID != hex.EncodeToString(Hash(pubKey)) {
-		err = errBadHandShake
+		err = errPeerIDVerification
 		return
 	}
 	err = peerPub.Unmarshal(pubKey, nil)
@@ -231,7 +262,7 @@ func (b *b2b) sayHello(c net.Conn) (peerID string, symmetricKey *symmetric, err 
 	key := RandomKey()
 	msg.PeerID = b.peerID
 	msg.Data = key
-	err = NewSecureReadWriter(c, peerPub, b.key).Write(msg)
+	err = NewSecureReadWriter(c, peerPub, b.key, b.options.ConnectionMaxInactive).Write(msg)
 	if err != nil {
 		return
 	}
@@ -279,7 +310,7 @@ func (b *b2b) sayHelloBack(c net.Conn) (peerID string, symmetricKey *symmetric, 
 
 	// verify peerID
 	if peerID != hex.EncodeToString(Hash(pubKey)) {
-		err = errBadHandShake
+		err = errPeerIDVerification
 		return
 	}
 	err = peerPub.Unmarshal(msg.Data, nil)
@@ -296,7 +327,7 @@ func (b *b2b) sayHelloBack(c net.Conn) (peerID string, symmetricKey *symmetric, 
 	}
 
 	// get key
-	err = NewSecureReadWriter(c, peerPub, b.key).Read(msg)
+	err = NewSecureReadWriter(c, peerPub, b.key, b.options.ConnectionMaxInactive).Read(msg)
 	if err != nil {
 		return
 	}
@@ -328,10 +359,17 @@ func (b *b2b) sayHelloBack(c net.Conn) (peerID string, symmetricKey *symmetric, 
 	return
 }
 
-func (b *b2b) addConn(peerID string, srw *secureReadWriter) {
+func (b *b2b) addConn(peerID string, srw *secureReadWriter) error {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
+
+	if len(b.conns[peerID]) >= b.options.MaxConnectionsPerPeer {
+		return errors.New("max connections per peer reached")
+	}
+
 	b.conns[peerID] = append(b.conns[peerID], srw)
+
+	return nil
 }
 
 func (b *b2b) getConn(peerID string) (*secureReadWriter, bool) {
