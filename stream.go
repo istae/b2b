@@ -2,29 +2,33 @@ package b2b
 
 import (
 	"errors"
+	"io"
+	"sync"
 	"time"
 )
 
 type Stream struct {
-	w *secureReadWriter
-	r chan []byte
+	mtx   sync.Mutex
+	w     *secureReadWriter // writer
+	r     chan io.Reader    // buffered channel that stores stream bytes to read
+	lastR io.Reader
 
 	cleanUp  func()
-	c        *Once
-	p        *Once
+	c        *Once // signals closed channel
+	p        *Once // signals stream closed by peer
 	streamID string
 	protocol string
 	peerID   string
 	baseID   string
 
-	maxInactive    *time.Timer
+	maxInactive    *time.Timer // closes the stream after an inactive period, reset by Read and Write calls
 	maxInactiveDur time.Duration
 }
 
 var errPeerClosed = errors.New("stream closed by peer")
 var errStreamClosed = errors.New("stream closed")
 
-func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (chan []byte, *Stream, bool) {
+func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (chan io.Reader, *Stream, bool) {
 
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
@@ -39,7 +43,7 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 
 	s := &Stream{
 		w:              w,
-		r:              make(chan []byte, 1024),
+		r:              make(chan io.Reader, 1024),
 		c:              NewOnce(),
 		p:              NewOnce(),
 		protocol:       protocol,
@@ -67,39 +71,57 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 	return s.r, s, true
 }
 
-func (s *Stream) Write(b []byte) error {
+func (s *Stream) Write(b []byte) (int, error) {
 
 	defer s.maxInactive.Reset(s.maxInactiveDur)
 
 	select {
 	case <-s.p.C:
-		return errPeerClosed
+		return 0, errPeerClosed
 	case <-s.c.C:
-		return errStreamClosed
+		return 0, errStreamClosed
 	default:
 	}
 
 	return s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Data: b})
 }
 
-func (s *Stream) Read() ([]byte, error) {
+func (s *Stream) Read(b []byte) (int, error) {
 
 	defer s.maxInactive.Reset(s.maxInactiveDur)
 
+	s.mtx.Lock()
+	if s.lastR != nil {
+		n, err := s.lastR.Read(b)
+		if errors.Is(err, io.EOF) {
+			s.lastR = nil
+		}
+		s.mtx.Unlock()
+		return n, err
+	}
+	s.mtx.Unlock()
+
 	select {
-	case b := <-s.r:
-		return b, nil
+	case r := <-s.r:
+		n, err := r.Read(b)
+		if !errors.Is(err, io.EOF) {
+			s.mtx.Lock()
+			s.lastR = r
+			s.mtx.Unlock()
+		}
+		return n, err
 	case <-s.p.C:
-		return nil, errPeerClosed
+		return 0, errPeerClosed
 	case <-s.c.C:
-		return nil, errStreamClosed
+		return 0, errStreamClosed
 	}
 }
 
 func (s *Stream) Close() error {
 	s.cleanUp()
 	s.c.Done()
-	return s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Status: StatusClose})
+	s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Status: StatusClose})
+	return nil
 }
 
 func (s *Stream) closedByPeer() {

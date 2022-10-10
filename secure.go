@@ -42,27 +42,27 @@ func NewSecureReadWriter(conn net.Conn, enc Encrypter, dec Decrypter, inactive t
 	return srw
 }
 
-func (s *secureReadWriter) Write(m encoding.BinaryMarshaler) error {
+func (s *secureReadWriter) Write(m encoding.BinaryMarshaler) (int, error) {
 
 	defer s.maxInactive.Reset(s.maxInactiveDur)
 
 	b, err := m.MarshalBinary()
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	fmt.Println("Marshall", string(b))
 
 	data, err := s.enc.Encrypt(b)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	l := make([]byte, 8)
 	binary.BigEndian.PutUint32(l, uint32(len(data)))
 
-	_, err = s.conn.Write(append(l, data...))
-	return err
+	// returned write length is not the actual length of the data
+	return s.conn.Write(append(l, data...))
 }
 
 func (s *secureReadWriter) Read(m encoding.BinaryUnmarshaler) (err error) {

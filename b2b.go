@@ -1,6 +1,7 @@
 package b2b
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -147,7 +148,7 @@ func (b *b2b) handle(conn *secureReadWriter) error {
 
 		// write to a buffered channel to preserve read order
 		select {
-		case r <- msg.Data:
+		case r <- bytes.NewReader(msg.Data):
 		default:
 			return errors.New("reached max read buffer")
 		}
@@ -262,7 +263,7 @@ func (b *b2b) sayHello(c net.Conn) (peerID string, symmetricKey *symmetric, err 
 	key := RandomKey()
 	msg.PeerID = b.peerID
 	msg.Data = key
-	err = NewSecureReadWriter(c, peerPub, b.key, b.options.ConnectionMaxInactive).Write(msg)
+	_, err = NewSecureReadWriter(c, peerPub, b.key, b.options.ConnectionMaxInactive).Write(msg)
 	if err != nil {
 		return
 	}
