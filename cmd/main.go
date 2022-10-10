@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 
 	"github.com/istae/b2b"
@@ -28,8 +29,10 @@ func main() {
 		b, _ := b2b.New(a, &opt)
 		b.AddProcol("test-protocol", func(s *b2b.Stream) {
 			defer s.Close()
-			b, _ := s.Read()
+			b, _ := io.ReadAll(s)
 			fmt.Println("handle: test-protocol", string(b))
+			s.Write([]byte("what up what up"))
+			s.Write([]byte("what up what up"))
 			s.Write([]byte("what up what up"))
 		})
 
@@ -55,18 +58,30 @@ func main() {
 			log.Fatal(err)
 		}
 
-		err = s.Write([]byte("yo yo yo yo"))
+		_, err = s.Write([]byte("yo yo yo yo"))
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		m, err := s.Read()
+		m, err := io.ReadAll(s)
 		if err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println(string(m))
-		s.Close()
 
+		m, err = io.ReadAll(s)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(string(m))
+
+		m, err = io.ReadAll(s)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(string(m))
+
+		s.Close()
 		b.Disconnect(peerID)
 	}
 }
