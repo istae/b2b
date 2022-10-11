@@ -1,37 +1,44 @@
 package b2b
 
-import "time"
+import (
+	"time"
+)
 
-type timer struct {
-	t *time.Timer
-	c chan struct{}
+type Timer struct {
+	C    chan struct{}
+	once *Once
+	tt   *time.Timer
+	dur  time.Duration
 }
 
-func NewTimer(td time.Duration) {
+func NewTimer(dur time.Duration) *Timer {
 
-	c := make(chan struct{})
-	t := &timer{
-		c: c,
+	t := &Timer{
+		once: NewOnce(),
+		dur:  dur,
 	}
-	if td > 0 {
-		t.t = time.NewTimer(td)
+
+	t.C = t.once.C
+
+	if dur > 0 {
+		t.tt = time.NewTimer(dur)
 		go func() {
-			<-t.t.C
-			close(c)
+			<-t.tt.C
+			t.Close()
 		}()
 	}
+
+	return t
 }
 
-func (t *timer) Stop() {
-	if t.t != nil {
-		t.t.Stop()
+func (t *Timer) Reset() {
+	if t.tt != nil {
+		if t.tt.Stop() {
+			t.tt.Reset(t.dur)
+		}
 	}
-	NewOnce().Done()
-	close(t.c)
 }
 
-func (t *timer) Reset(td time.Duration) {
-	if t.t != nil {
-		t.t.Reset(td)
-	}
+func (t *Timer) Close() {
+	t.once.Done()
 }

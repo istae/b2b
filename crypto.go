@@ -90,7 +90,7 @@ func RandomKey() []byte {
 	return id
 }
 
-func NewSymmetricKey(key []byte) (*symmetric, error) {
+func NewSymmetric(key []byte) (*symmetric, error) {
 
 	block, err := aes.NewCipher(key)
 	if err != nil {

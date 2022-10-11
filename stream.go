@@ -2,16 +2,13 @@ package b2b
 
 import (
 	"errors"
-	"io"
 	"sync"
-	"time"
 )
 
 type Stream struct {
-	mtx   sync.Mutex
-	w     *secureReadWriter // writer
-	r     chan io.Reader    // buffered channel that stores stream bytes to read
-	lastR io.Reader
+	mtx sync.Mutex
+	w   *secureReadWriter // writer
+	r   chan []byte       // buffered channel that stores stream bytes to read
 
 	cleanUp  func()
 	c        *Once // signals closed channel
@@ -21,14 +18,14 @@ type Stream struct {
 	peerID   string
 	baseID   string
 
-	maxInactive    *time.Timer // closes the stream after an inactive period, reset by Read and Write calls
-	maxInactiveDur time.Duration
+	maxInactive *Timer // closes the stream after an inactive period, reset by Read and Write calls
 }
 
 var errPeerClosed = errors.New("stream closed by peer")
 var errStreamClosed = errors.New("stream closed")
+var errTimeout = errors.New("stream timed out")
 
-func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (chan io.Reader, *Stream, bool) {
+func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (chan []byte, *Stream, bool) {
 
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
@@ -39,26 +36,23 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 		return s.r, s, false
 	}
 
-	maxInactive := time.NewTimer(b.options.StreamMaxInactive)
-
 	s := &Stream{
-		w:              w,
-		r:              make(chan io.Reader, 1024),
-		c:              NewOnce(),
-		p:              NewOnce(),
-		protocol:       protocol,
-		peerID:         peerID,
-		streamID:       streamID,
-		baseID:         b.peerID,
-		maxInactive:    maxInactive,
-		maxInactiveDur: b.options.StreamMaxInactive,
+		w:           w,
+		r:           make(chan []byte, 1024),
+		c:           NewOnce(),
+		p:           NewOnce(),
+		protocol:    protocol,
+		peerID:      peerID,
+		streamID:    streamID,
+		baseID:      b.peerID,
+		maxInactive: NewTimer(b.options.StreamMaxInactive),
 	}
 
 	s.cleanUp = func() {
 		b.mtx.Lock()
 		delete(b.streams, id)
 		b.mtx.Unlock()
-		maxInactive.Stop()
+		s.maxInactive.Close()
 	}
 
 	go func() {
@@ -71,57 +65,53 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 	return s.r, s, true
 }
 
-func (s *Stream) Write(b []byte) (int, error) {
+func (s *Stream) Write(b []byte) error {
 
-	defer s.maxInactive.Reset(s.maxInactiveDur)
+	defer s.maxInactive.Reset()
 
 	select {
+	case <-s.maxInactive.C:
+		return errTimeout
 	case <-s.p.C:
-		return 0, errPeerClosed
+		return errPeerClosed
 	case <-s.c.C:
-		return 0, errStreamClosed
+		return errStreamClosed
 	default:
+		return s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Data: b})
 	}
-
-	return s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Data: b})
 }
 
-func (s *Stream) Read(b []byte) (int, error) {
+func (s *Stream) Read() ([]byte, error) {
 
-	defer s.maxInactive.Reset(s.maxInactiveDur)
+	defer s.maxInactive.Reset()
 
-	s.mtx.Lock()
-	if s.lastR != nil {
-		n, err := s.lastR.Read(b)
-		if errors.Is(err, io.EOF) {
-			s.lastR = nil
+	if len(s.r) == 0 {
+		select {
+		case <-s.maxInactive.C:
+			return nil, errTimeout
+		case <-s.p.C:
+			return nil, errPeerClosed
+		case <-s.c.C:
+			return nil, errStreamClosed
+		case b := <-s.r:
+			return b, nil
 		}
-		s.mtx.Unlock()
-		return n, err
 	}
-	s.mtx.Unlock()
 
-	select {
-	case r := <-s.r:
-		n, err := r.Read(b)
-		if !errors.Is(err, io.EOF) {
-			s.mtx.Lock()
-			s.lastR = r
-			s.mtx.Unlock()
-		}
-		return n, err
-	case <-s.p.C:
-		return 0, errPeerClosed
-	case <-s.c.C:
-		return 0, errStreamClosed
-	}
+	return <-s.r, nil
 }
 
 func (s *Stream) Close() error {
+
 	s.cleanUp()
 	s.c.Done()
-	s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Status: StatusClose})
-	return nil
+
+	select {
+	case <-s.p.C: // if peer closed, no need to write close message
+		return nil
+	default:
+		return s.w.Write(&Msg{Protocol: s.protocol, StreamID: s.streamID, PeerID: s.baseID, Status: StatusClose})
+	}
 }
 
 func (s *Stream) closedByPeer() {

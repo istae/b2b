@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net"
-	"time"
 )
 
 type Encrypter interface {
@@ -20,54 +19,41 @@ type secureReadWriter struct {
 	conn net.Conn
 	enc  Encrypter
 	dec  Decrypter
-
-	maxInactive    *time.Timer
-	maxInactiveDur time.Duration
 }
 
-func NewSecureReadWriter(conn net.Conn, enc Encrypter, dec Decrypter, inactive time.Duration) *secureReadWriter {
+func NewSecureReadWriter(conn net.Conn, enc Encrypter, dec Decrypter) *secureReadWriter {
 	srw := &secureReadWriter{
-		conn:           conn,
-		enc:            enc,
-		dec:            dec,
-		maxInactive:    time.NewTimer(inactive),
-		maxInactiveDur: inactive,
+		conn: conn,
+		enc:  enc,
+		dec:  dec,
 	}
-
-	go func() {
-		<-srw.maxInactive.C
-		_ = srw.Close()
-	}()
 
 	return srw
 }
 
-func (s *secureReadWriter) Write(m encoding.BinaryMarshaler) (int, error) {
-
-	defer s.maxInactive.Reset(s.maxInactiveDur)
+func (s *secureReadWriter) Write(m encoding.BinaryMarshaler) error {
 
 	b, err := m.MarshalBinary()
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	fmt.Println("Marshall", string(b))
 
 	data, err := s.enc.Encrypt(b)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
 	l := make([]byte, 8)
 	binary.BigEndian.PutUint32(l, uint32(len(data)))
 
 	// returned write length is not the actual length of the data
-	return s.conn.Write(append(l, data...))
+	_, err = s.conn.Write(append(l, data...))
+	return err
 }
 
 func (s *secureReadWriter) Read(m encoding.BinaryUnmarshaler) (err error) {
-
-	defer s.maxInactive.Reset(s.maxInactiveDur)
 
 	b := make([]byte, 8)
 	_, err = s.conn.Read(b)
@@ -93,6 +79,5 @@ func (s *secureReadWriter) Read(m encoding.BinaryUnmarshaler) (err error) {
 }
 
 func (s *secureReadWriter) Close() error {
-	s.maxInactive.Stop()
 	return s.conn.Close()
 }

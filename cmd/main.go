@@ -3,8 +3,8 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
+	"time"
 
 	"github.com/istae/b2b"
 )
@@ -23,13 +23,10 @@ func main() {
 			log.Fatal(err)
 		}
 
-		opt := b2b.DefaultOptions()
-		// opt.MaxConnectionsPerPeer = 1
-
-		b, _ := b2b.New(a, &opt)
+		b, _ := b2b.NewB2B(a)
 		b.AddProcol("test-protocol", func(s *b2b.Stream) {
 			defer s.Close()
-			b, _ := io.ReadAll(s)
+			b, _ := s.Read()
 			fmt.Println("handle: test-protocol", string(b))
 			s.Write([]byte("what up what up"))
 			s.Write([]byte("what up what up"))
@@ -47,41 +44,43 @@ func main() {
 			log.Fatal(err)
 		}
 
-		b, _ := b2b.New(a, nil)
+		b, _ := b2b.NewB2B(a)
+		b.SetStreamMaxInactive(time.Second)
 
 		peerID, err := b.Connect("localhost:" + *port)
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer b.Disconnect(peerID)
 		s, err := b.NewStream("test-protocol", peerID)
 		if err != nil {
 			log.Fatal(err)
 		}
+		defer s.Close()
 
-		_, err = s.Write([]byte("yo yo yo yo"))
+		err = s.Write([]byte("yo yo yo yo"))
 		if err != nil {
 			log.Fatal(err)
 		}
 
-		m, err := io.ReadAll(s)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println(string(m))
-
-		m, err = io.ReadAll(s)
+		m, err := s.Read()
 		if err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println(string(m))
 
-		m, err = io.ReadAll(s)
+		m, err = s.Read()
 		if err != nil {
 			log.Fatal(err)
 		}
 		fmt.Println(string(m))
 
-		s.Close()
+		m, err = s.Read()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(string(m))
+
 		b.Disconnect(peerID)
 	}
 }
