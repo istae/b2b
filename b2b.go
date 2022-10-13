@@ -196,11 +196,10 @@ func (b *b2b) Disconnect(peerID string) error {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
 
-	conns := b.conns[peerID]
-	for _, s := range conns {
+	for _, s := range b.conns[peerID] {
 		s.Close()
 	}
-	b.conns[peerID] = nil
+	delete(b.conns, peerID)
 
 	return nil
 }

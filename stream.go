@@ -2,13 +2,12 @@ package b2b
 
 import (
 	"errors"
-	"sync"
 )
 
 type Stream struct {
-	mtx sync.Mutex
-	w   *secureReadWriter // writer
-	r   chan []byte       // buffered channel that stores stream bytes to read
+	// mtx sync.Mutex
+	w *secureReadWriter // writer
+	r chan []byte       // buffered channel that stores stream bytes to read
 
 	cleanUp  func()
 	c        *Once // signals closed channel
@@ -65,7 +64,7 @@ func (b *b2b) stream(w *secureReadWriter, protocol, peerID, streamID string) (ch
 	return s.r, s, true
 }
 
-func (s *Stream) Write(b []byte) error {
+func (s *Stream) WriteMsg(b []byte) error {
 
 	defer s.maxInactive.Reset()
 
@@ -81,7 +80,7 @@ func (s *Stream) Write(b []byte) error {
 	}
 }
 
-func (s *Stream) Read() ([]byte, error) {
+func (s *Stream) ReadMsg() ([]byte, error) {
 
 	defer s.maxInactive.Reset()
 
