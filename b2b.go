@@ -64,7 +64,7 @@ func (b *b2b) SetStreamMaxInactive(t time.Duration) {
 	b.options.StreamMaxInactive = t
 }
 
-func (b *b2b) AddProcol(name string, h HandleFunc) {
+func (b *b2b) AddProtocol(name string, h HandleFunc) {
 	b.protocols[name] = h
 }
 

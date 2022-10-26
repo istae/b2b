@@ -24,7 +24,7 @@ func main() {
 		}
 
 		b, _ := b2b.NewB2B(a)
-		b.AddProcol("test-protocol", func(s *b2b.Stream) {
+		b.AddProtocol("test-protocol", func(s *b2b.Stream) {
 			defer s.Close()
 			b, _ := s.ReadMsg()
 			fmt.Println("handle: test-protocol", string(b))
@@ -75,11 +75,11 @@ func main() {
 		}
 		fmt.Println(string(m))
 
-		// m, err = s.Read()
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-		// fmt.Println(string(m))
+		m, err = s.ReadMsg()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(string(m))
 
 		b.Disconnect(peerID)
 	}
